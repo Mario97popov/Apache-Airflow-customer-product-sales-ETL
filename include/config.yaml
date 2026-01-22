@@ -1,0 +1,22 @@
+aws_conn_id: aws_conn_id
+
+s3:
+  bucket: data-wharehouse-course-1
+  folder: AirflowPipeline/exercise/
+
+snowflake:
+  conn_id: my_snowflake_conn
+  database: SALES_DB_NOV_AIRFLOW
+  targets:
+    sales:
+      schema: cleansed_layer
+      tables: sales
+    customers:
+      schema: cleansed_layer
+      tables: customers
+    products:
+      schema: cleansed_layer
+      tables: products
+    monthly_sales:
+        schema: presentation_layer
+        tables: monthly_sales_summary
