@@ -1,5 +1,4 @@
 import pandas as pd
-import s3fs
 
 from airflow.providers.amazon.aws.hooks.s3 import S3Hook
 from ..logger import setup_logger

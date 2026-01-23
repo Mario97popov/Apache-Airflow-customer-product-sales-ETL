@@ -1,6 +1,6 @@
 import logging
 
-def setup_logger(name: str = "elt") -> logging.Logger:
+def setup_logger(name: str = "etl") -> logging.Logger:
     """
     Configure and return a logger instance for ETL process
     """

@@ -20,3 +20,6 @@ snowflake:
     monthly_sales:
         schema: presentation_layer
         tables: monthly_sales_summary
+    customer_segment:
+        schema: business_layer
+        tables: segment_customer

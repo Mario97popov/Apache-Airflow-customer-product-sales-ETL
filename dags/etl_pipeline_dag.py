@@ -7,7 +7,7 @@ from pendulum import datetime
 from include.etl.extract_data_s3 import extract_data_from_s3
 from include.etl.load_data import load_data_to_snowflake
 from include.etl.transform import clean_sales_data, clean_customers_data, clean_products_data, merge_data, \
-    compute_monthly_aggregates
+    compute_monthly_aggregates, segment_customers
 
 with open("include/config.yaml", 'r') as file:
     config = yaml.safe_load(file)
@@ -79,6 +79,13 @@ def etl_pipeline_dag():
         return aggregated_df.to_json(orient="split", date_format="iso")
 
     @task()
+    def segment_customers_task(sales: str, customers: str) -> str:
+        sales_df = pd.read_json(sales, orient="split")
+        customers_df = pd.read_json(customers, orient="split")
+        segmented_df = segment_customers(sales_df, customers_df)
+        return segmented_df.to_json(orient="split", date_format="iso")
+
+    @task()
     def load_to_snowflake_task(final_json: str, database: str, schema_name: str, table_name: str):
         final_df = pd.read_json(final_json, orient="split")
         load_data_to_snowflake(df=final_df, database=database, schema=schema_name, table=table_name)
@@ -100,6 +107,8 @@ def etl_pipeline_dag():
     merge_output = merged_data_task(transformed_sales, transformed_customers, transformed_products)
 
     aggregated_output = aggregated_data_task(merge_output)
+
+    segment_output = segment_customers_task(transformed_sales, transformed_customers)
 
     load_to_snowflake_task(transformed_sales, config["snowflake"]["database"],
                            config["snowflake"]["targets"]["sales"]["schema"],
