@@ -1,13 +1,13 @@
 import pandas as pd
 
-from airflow.decorators import dag, task
+from airflow.sdk import TaskGroup, dag, task
 from airflow.utils import yaml
 from pendulum import datetime
 
 from include.etl.extract_data_s3 import extract_data_from_s3
 from include.etl.load_data import load_data_to_snowflake
 from include.etl.transform import clean_sales_data, clean_customers_data, clean_products_data, merge_data, \
-    compute_monthly_aggregates, segment_customers
+    compute_monthly_aggregates, segment_customers, detect_sales_anomalies, forecast_sales
 
 with open("include/config.yaml", 'r') as file:
     config = yaml.safe_load(file)
@@ -86,48 +86,79 @@ def etl_pipeline_dag():
         return segmented_df.to_json(orient="split", date_format="iso")
 
     @task()
+    def anomalies_sales_task(sales: str) -> str:
+        sales_df = pd.read_json(sales, orient="split")
+        sales_df = detect_sales_anomalies(sales_df)
+        return sales_df.to_json(orient="split", date_format="iso")
+
+    @task()
+    def forecasted_sales(sales: str) -> str:
+        sales_df = pd.read_json(sales, orient="split")
+        sales_df = forecast_sales(sales_df)
+        return sales_df.to_json(orient="split", date_format="iso")
+
+    @task()
     def load_to_snowflake_task(final_json: str, database: str, schema_name: str, table_name: str):
         final_df = pd.read_json(final_json, orient="split")
         load_data_to_snowflake(df=final_df, database=database, schema=schema_name, table=table_name)
 
-    files = extract_data(
-        bucket=config['s3']['bucket'],
-        folder=config['s3']['folder'],
-        aws_conn_id=config['aws_conn_id']
-    )
+    with TaskGroup("extraction") as extraction:
+        files = extract_data(
+            bucket=config['s3']['bucket'],
+            folder=config['s3']['folder'],
+            aws_conn_id=config['aws_conn_id']
+        )
+        
+        sales_file = get_sales_file(files=files)
+        customers_file = get_customers_file(files=files)
+        products_file = get_products_file(files=files)
 
-    sales_file = get_sales_file(files=files)
-    customers_file = get_customers_file(files=files)
-    products_file = get_products_file(files=files)
 
-    transformed_sales = transform_sales_data(sales_file=sales_file)
-    transformed_customers = transform_customers_file(customers_file=customers_file)
-    transformed_products = transform_product_file(products_file=products_file)
+    with TaskGroup("transform") as transform:
+        transformed_sales = transform_sales_data(sales_file=sales_file)
+        transformed_customers = transform_customers_file(customers_file=customers_file)
+        transformed_products = transform_product_file(products_file=products_file)
+        merge_output = merged_data_task(transformed_sales, transformed_customers, transformed_products)
 
-    merge_output = merged_data_task(transformed_sales, transformed_customers, transformed_products)
+    with TaskGroup("analytics") as analytics:
+        aggregated_output = aggregated_data_task(merge_output)
+        segment_output = segment_customers_task(transformed_sales, transformed_customers)
+        detect_anomalies_output = anomalies_sales_task(transformed_sales)
+        forecast_sales_output = forecasted_sales(transformed_sales)
 
-    aggregated_output = aggregated_data_task(merge_output)
+    with TaskGroup("loading") as loading:
+        load_to_snowflake_task.override(task_id="load_cleaned_sales")(transformed_sales, config["snowflake"]["database"],
+                               config["snowflake"]["targets"]["sales"]["schema"],
+                               config["snowflake"]["targets"]["sales"]["tables"],
+                               )
+        
+        load_to_snowflake_task.override(task_id="load_cleaned_customers")(transformed_customers, config["snowflake"]["database"],
+                               config["snowflake"]["targets"]["customers"]["schema"],
+                               config["snowflake"]["targets"]["customers"]["tables"],
+                               )
+        
+        load_to_snowflake_task.override(task_id="load_cleaned_products")(transformed_products, config["snowflake"]["database"],
+                               config["snowflake"]["targets"]["products"]["schema"],
+                               config["snowflake"]["targets"]["products"]["tables"],
+                               )
+        
+        load_to_snowflake_task.override(task_id="load_monthly_sales")(aggregated_output, config["snowflake"]["database"],
+                               config["snowflake"]["targets"]["monthly_sales"]["schema"],
+                               config["snowflake"]["targets"]["monthly_sales"]["tables"],
+                               )
 
-    segment_output = segment_customers_task(transformed_sales, transformed_customers)
+        load_to_snowflake_task.override(task_id="load_customer_segment")(segment_output, config["snowflake"]["database"],
+                               config["snowflake"]["targets"]["customer_segment"]["schema"],
+                               config["snowflake"]["targets"]["customer_segment"]["tables"],
+                               )
 
-    load_to_snowflake_task(transformed_sales, config["snowflake"]["database"],
-                           config["snowflake"]["targets"]["sales"]["schema"],
-                           config["snowflake"]["targets"]["sales"]["tables"],
-                           )
+        load_to_snowflake_task.override(task_id="load_forecast_sales")(forecast_sales_output, config["snowflake"]["database"],
+                               config["snowflake"]["targets"]["forecast_sales"]["schema"],
+                               config["snowflake"]["targets"]["forecast_sales"]["tables"],
+                               )
 
-    load_to_snowflake_task(transformed_customers, config["snowflake"]["database"],
-                           config["snowflake"]["targets"]["customers"]["schema"],
-                           config["snowflake"]["targets"]["customers"]["tables"],
-                           )
-
-    load_to_snowflake_task(transformed_products, config["snowflake"]["database"],
-                           config["snowflake"]["targets"]["products"]["schema"],
-                           config["snowflake"]["targets"]["products"]["tables"],
-                           )
-
-    load_to_snowflake_task(aggregated_output, config["snowflake"]["database"],
-                           config["snowflake"]["targets"]["monthly_sales"]["schema"],
-                           config["snowflake"]["targets"]["monthly_sales"]["tables"],
-                           )
-
+        load_to_snowflake_task.override(task_id="load_detect_sales_anomalies")(detect_anomalies_output, config["snowflake"]["database"],
+                               config["snowflake"]["targets"]["detect_sales_anomalies"]["schema"],
+                               config["snowflake"]["targets"]["detect_sales_anomalies"]["tables"],
+                               )
 etl_pipeline_dag()

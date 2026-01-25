@@ -1,7 +1,9 @@
 import pandas as pd
 from ..logger import setup_logger
 from ..validations.aggregates_schema import validate_pre_aggregates_schema, validate_post_aggregates_schema
+from ..validations.anomalies_schema import validate_post_anomalies_schema
 from ..validations.customers_schema import validate_pre_customers_schema, validate_post_customer_schema
+from ..validations.forecast_schema import validate_post_sales_forecast_schema
 from ..validations.products_schema import validate_pre_products_schema, validate_post_products_schema
 from ..validations.sales_schema import validate_pre_sales_schema, validate_post_sales_schema
 from ..validations.segment_schema import validate_post_segmentation_schema
@@ -113,14 +115,14 @@ def segment_customers(sales_df: pd.DataFrame, customer_df: pd.DataFrame) -> pd.D
 
     segmented_df.dropna(subset=["total_spent"], inplace=True)
 
-    segmented_df["customer_segments"] = pd.cut(
+    segmented_df["customer_segment"] = pd.cut(
         segmented_df["total_spent"],
         bins=[0, 1000, 5000, 10000, float("inf")],
         labels=["Low", "Medium", "High", "VIP"],
     )
 
     segmented_df["segmentation_date"] = pd.to_datetime(customer_df["signup_date"], format="mixed", errors="coerce")
-    allowed_columns = ["customer_id", "total_spent", "customer_segment"]
+    allowed_columns = ["customer_id", "total_spent", "customer_segment", "segmentation_date"]
     df_segmented = drop_extra_columns(segmented_df, allowed_columns)
 
     df_segmented = validate_post_segmentation_schema(df_segmented)
@@ -130,6 +132,43 @@ def segment_customers(sales_df: pd.DataFrame, customer_df: pd.DataFrame) -> pd.D
     return df_segmented
 
 
+def detect_sales_anomalies(sales_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Detect sales anomalies
+    """
+    logging.info("Detecting sales anomalies")
+    threshold = sales_df["total_revenue"].mean() + (3 * sales_df["total_revenue"].std())
+
+    anomalies_df = sales_df[sales_df["total_revenue"] > threshold].copy()
+
+    anomalies_df["order_date"] = pd.to_datetime(anomalies_df["order_date"], format="mixed", errors="coerce")
+    allowed_columns = ["order_id", "customer_id", "product_id", "order_date", "total_revenue"]
+    df_anomalies = drop_extra_columns(anomalies_df, allowed_columns)
+
+    df_anomalies = validate_post_anomalies_schema(df_anomalies)
+
+    logging.info(f"Final anomalies: {len(df_anomalies)} rows")
+
+    return df_anomalies
+
+def forecast_sales(sales_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Sales forecast for 7 dayys mean
+    """
+    logging.info("Forecasting sales")
+
+    sales_df["order_date"] = pd.to_datetime(sales_df["order_date"], format="mixed", errors="coerce")
+    sales_df.set_index("order_date", inplace=True)
+    sales_df["sales_forecast"] = sales_df["total_revenue"].rolling(window=7, min_periods=1).mean()
+    sales_df.reset_index(inplace=True)
+    allowed_columns = ["order_date", "total_revenue", "sales_forecast"]
+    sales_df = drop_extra_columns(sales_df, allowed_columns)
+
+    sales_df = validate_post_sales_forecast_schema(sales_df)
+
+    logging.info(f"forecast sales: {len(sales_df)} rows")
+
+    return sales_df
 
 
 
